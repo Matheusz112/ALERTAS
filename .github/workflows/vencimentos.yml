@@ -1,9 +1,6 @@
 name: Verificar Vencimentos
 
 on:
-  schedule:
-    - cron: '0 */6 * * *'
-
   workflow_dispatch:
 
 jobs:
@@ -11,14 +8,14 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Baixar projeto
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Mostrar arquivos
-        run: ls
+        run: |
+          pwd
+          ls -la
 
-      - name: Instalar Node
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: 22
 
