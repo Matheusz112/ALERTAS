@@ -1,13 +1,13 @@
+const admin = require('firebase-admin');
 const axios = require('axios');
 
 // =========================================
 // CONFIGURAÇÕES
 // =========================================
-const BASEROW_API_URL = process.env.BASEROW_API_URL || 'https://api.baserow.io';
-const BASEROW_TOKEN = process.env.BASEROW_TOKEN;
 const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
+const FIREBASE_CONFIG = process.env.FIREBASE_CONFIG;
 
-// IDs das tabelas
+// IDs das coleções/tabelas no Firebase
 const SHELVES = {
   bebida: '150731',
   macarrao: '656122',
@@ -20,13 +20,39 @@ const SHELVES = {
 const alerts = [];
 
 // =========================================
+// INICIALIZAR FIREBASE
+// =========================================
+function inicializarFirebase() {
+  try {
+    if (!FIREBASE_CONFIG) {
+      throw new Error('FIREBASE_CONFIG não configurado!');
+    }
+
+    // Parse do JSON de configuração
+    const serviceAccount = JSON.parse(FIREBASE_CONFIG);
+
+    // Inicializar Firebase Admin
+    admin.initializeApp({
+      credential: admin.credential.cert(serviceAccount),
+      databaseURL: serviceAccount.databaseURL || `https://${serviceAccount.project_id}-default-rtdb.firebaseio.com`
+    });
+
+    console.log('✅ Firebase inicializado com sucesso!');
+    return admin.database(); // Retorna referência do Realtime Database
+  } catch (error) {
+    console.error('❌ Erro ao inicializar Firebase:', error.message);
+    process.exit(1);
+  }
+}
+
+// =========================================
 // VERIFICAR CONFIGURAÇÕES
 // =========================================
 function verificarConfiguracoes() {
   const erros = [];
   
-  if (!BASEROW_TOKEN) {
-    erros.push('❌ BASEROW_TOKEN não configurado!');
+  if (!FIREBASE_CONFIG) {
+    erros.push('❌ FIREBASE_CONFIG não configurado!');
   }
   
   if (!DISCORD_WEBHOOK_URL) {
@@ -64,7 +90,7 @@ async function enviarDiscord(mensagem) {
 // =========================================
 async function enviarPush(titulo, mensagem) {
   try {
-    // Aqui você pode adicionar integração com OneSignal, Firebase Cloud Messaging, etc.
+    // Você pode implementar Firebase Cloud Messaging aqui
     console.log(`📱 Push Notification: ${titulo} - ${mensagem}`);
   } catch (error) {
     console.error('❌ Erro ao enviar push:', error.message);
@@ -93,42 +119,48 @@ function calcularDias(dataVencimento) {
 }
 
 // =========================================
-// FUNÇÃO PARA BUSCAR DADOS DA TABELA
+// FUNÇÃO PARA BUSCAR DADOS DO FIREBASE
 // =========================================
-async function buscarDadosTabela(tableId) {
+async function buscarDadosFirebase(db, caminhoSetor) {
   try {
-    const response = await axios.get(
-      `${BASEROW_API_URL}/api/database/rows/table/${tableId}/`,
-      {
-        headers: {
-          'Authorization': `Token ${BASEROW_TOKEN}`,
-        },
-        params: {
-          user_field_names: true,
-          size: 200, // Buscar até 200 registros
-        }
-      }
-    );
+    const snapshot = await db.ref(caminhoSetor).once('value');
+    const dados = snapshot.val();
     
-    return response.data.results || [];
-  } catch (error) {
-    console.error(`❌ Erro ao buscar dados da tabela ${tableId}:`, error.message);
-    if (error.response) {
-      console.error('Status:', error.response.status);
-      console.error('Data:', error.response.data);
+    if (!dados) {
+      return [];
     }
+    
+    // Converter objeto para array
+    if (Array.isArray(dados)) {
+      return dados;
+    }
+    
+    // Se for objeto, converter para array
+    return Object.keys(dados).map(key => ({
+      id: key,
+      ...dados[key]
+    }));
+  } catch (error) {
+    console.error(`❌ Erro ao buscar dados do Firebase:`, error.message);
     return [];
   }
 }
 
 // =========================================
-// FUNÇÃO PARA VERIFICAR TABELA
+// FUNÇÃO PARA VERIFICAR SETOR
 // =========================================
-async function verificarTabela(nomeSetor, tableId) {
+async function verificarSetor(db, nomeSetor, setorId) {
   try {
-    console.log(`🔍 Verificando setor: ${nomeSetor.toUpperCase()} (ID: ${tableId})`);
+    console.log(`🔍 Verificando setor: ${nomeSetor.toUpperCase()} (ID: ${setorId})`);
     
-    const items = await buscarDadosTabela(tableId);
+    // Buscar dados do Firebase
+    // Ajuste o caminho de acordo com sua estrutura no Firebase
+    // Exemplos de caminhos possíveis:
+    // - `/setores/${setorId}/produtos`
+    // - `/produtos/${setorId}`
+    // - `/estoque/${nomeSetor}`
+    const caminho = `/setores/${setorId}/produtos`; // Ajuste conforme sua estrutura
+    const items = await buscarDadosFirebase(db, caminho);
     
     if (items.length === 0) {
       console.log(`   ⚠️  Nenhum item encontrado no setor ${nomeSetor}`);
@@ -140,10 +172,10 @@ async function verificarTabela(nomeSetor, tableId) {
     let alertasSetor = 0;
     
     for (const item of items) {
-      // Adapte os nomes dos campos de acordo com sua tabela Baserow
-      const vencimento = item.VENCIMENTO || item.vencimento || item.Vencimento;
-      const produto = item.produto || item.Produto || item.PRODUTO || 'Sem nome';
-      const quantidade = item.quantidade || item.Quantidade || item.QUANTIDADE || 0;
+      // Adapte os nomes dos campos de acordo com sua estrutura no Firebase
+      const vencimento = item.VENCIMENTO || item.vencimento || item.dataVencimento;
+      const produto = item.produto || item.nome || item.nomeProduto || 'Sem nome';
+      const quantidade = item.quantidade || item.qtd || item.estoque || 0;
       
       if (!vencimento) continue;
       
@@ -207,6 +239,9 @@ async function run() {
     // Verificar configurações
     verificarConfiguracoes();
     
+    // Inicializar Firebase
+    const db = inicializarFirebase();
+    
     console.log(`📅 Data: ${new Date().toLocaleDateString('pt-BR', { 
       weekday: 'long', 
       year: 'numeric', 
@@ -217,8 +252,8 @@ async function run() {
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
     
     // Verificar cada setor
-    for (const [nome, tableId] of Object.entries(SHELVES)) {
-      await verificarTabela(nome, tableId);
+    for (const [nome, setorId] of Object.entries(SHELVES)) {
+      await verificarSetor(db, nome, setorId);
     }
     
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
@@ -246,6 +281,9 @@ async function run() {
     console.log(`   ✅ Setores verificados: ${Object.keys(SHELVES).length}`);
     console.log(`   ⚠️  Alertas encontrados: ${alerts.length}`);
     console.log('\n✅ Verificação concluída com sucesso!\n');
+    
+    // Fechar conexão Firebase
+    await admin.app().delete();
     
   } catch (error) {
     console.error('\n❌ ERRO FATAL:', error.message);
